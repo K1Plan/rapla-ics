@@ -1,0 +1,41 @@
+name: Build and publish ICS
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # jede Stunde
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build ICS
+        env:
+          RAPLA_URL: ${{ secrets.RAPLA_URL }}
+        run: python build.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet calendar.ics; then
+            git add calendar.ics
+            git commit -m "Update calendar.ics"
+            git push
+          else
+            echo "No changes."
+          fi
