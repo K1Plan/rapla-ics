@@ -196,6 +196,8 @@ Developed for **DHBW students** who want an automated, privacy-friendly way to s
 
 Contributions and improvements are always welcome — just make sure never to publish private Rapla keys.
 
+This project was created with help from AI
+
 ---
 
 **License:** MIT © 2025
