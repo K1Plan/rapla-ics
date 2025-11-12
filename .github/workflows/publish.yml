@@ -4,7 +4,7 @@ on:
   push:                # startet bei jedem Commit
   workflow_dispatch:   # manuell startbar im Actions-Tab
   schedule:
-    - cron: "0 * * * *"   # stündlich
+    - cron: "0 7 * * *"   # Täglich
 
 jobs:
   build:
