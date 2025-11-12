@@ -205,12 +205,14 @@ def scrape_html_to_ics(html_url, tz="Europe/Berlin"):
         if dt_end <= dt_start:
             dt_end += timedelta(hours=1)  # Sicherheitsfallback
 
-                ev = Event()
+        # Event erstellen
+        ev = Event()
         ev.add("SUMMARY", title or "Vorlesung")
         ev.add("DTSTART", dt_start)
         ev.add("DTEND", dt_end)
 
         # --- NEU: stabile UID + DTSTAMP für Abo-Clients ---
+        from hashlib import sha256
         uid_seed = f"{ev_date.isoformat()}|{sh}-{eh}|{(title or '').strip()}"
         uid = sha256(uid_seed.encode("utf-8")).hexdigest()[:24] + "@rapla-scrape"
         ev.add("UID", uid)
@@ -218,11 +220,6 @@ def scrape_html_to_ics(html_url, tz="Europe/Berlin"):
 
         cal.add_component(ev)
 
-        ev = Event()
-        ev.add("SUMMARY", title or "Vorlesung")
-        ev.add("DTSTART", dt_start)
-        ev.add("DTEND", dt_end)
-        cal.add_component(ev)
 
     return cal.to_ical()
 
