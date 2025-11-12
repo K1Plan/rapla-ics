@@ -127,6 +127,10 @@ def scrape_html_to_ics(html_url, tz="Europe/Berlin"):
     cal = Calendar()
     cal.add('PRODID', '-//Rapla HTML Scrape//ICS//DE')
     cal.add('VERSION', '2.0')
+    cal.add('METHOD', 'PUBLISH')
+    cal.add('X-WR-CALNAME', 'DHBW Vorlesungen (Rapla)')
+    cal.add('REFRESH-INTERVAL;VALUE=DURATION', 'PT1H')
+    cal.add('X-PUBLISHED-TTL', 'PT1H')
     cal.add('X-WR-TIMEZONE', tz)
 
     week_days = _parse_week_dates_from_headers(soup)
@@ -200,6 +204,19 @@ def scrape_html_to_ics(html_url, tz="Europe/Berlin"):
         dt_end   = tzinfo.localize(datetime(ev_date.year, ev_date.month, ev_date.day, end_h, end_m))
         if dt_end <= dt_start:
             dt_end += timedelta(hours=1)  # Sicherheitsfallback
+
+                ev = Event()
+        ev.add("SUMMARY", title or "Vorlesung")
+        ev.add("DTSTART", dt_start)
+        ev.add("DTEND", dt_end)
+
+        # --- NEU: stabile UID + DTSTAMP für Abo-Clients ---
+        uid_seed = f"{ev_date.isoformat()}|{sh}-{eh}|{(title or '').strip()}"
+        uid = sha256(uid_seed.encode("utf-8")).hexdigest()[:24] + "@rapla-scrape"
+        ev.add("UID", uid)
+        ev.add("DTSTAMP", datetime.utcnow().replace(tzinfo=pytz.UTC))
+
+        cal.add_component(ev)
 
         ev = Event()
         ev.add("SUMMARY", title or "Vorlesung")
