@@ -1,19 +1,50 @@
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin, parse_qsl, urlencode, urlunparse
-from icalendar import Calendar, Event
+from icalendar import Calendar
 from datetime import datetime
 import pytz
 
+# ---------- Globale HTTP-Session ----------
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0 (Rapla-ICS-Downloader)"})
 
 def _get(url):
+    """Hilfsfunktion: lädt eine URL mit Fehlerbehandlung."""
     r = SESSION.get(url, timeout=30, allow_redirects=True)
     r.raise_for_status()
     return r
 
-def _try_variants(base_url: str):
+# ---------- iCal-Links finden ----------
+def find_all_ical_links(html_url: str):
+    """Sucht alle <link> und <a>-Tags, die ICS-Dateien verlinken."""
+    try:
+        r = _get(html_url)
+    except Exception:
+        return []
+    soup = BeautifulSoup(r.text, "html.parser")
+    links = set()
+
+    # Variante 1: <link rel="alternate" type="text/calendar">
+    for tag in soup.find_all("link", rel=True, href=True, type=True):
+        rel = " ".join(tag.get("rel")) if isinstance(tag.get("rel"), list) else tag.get("rel", "")
+        typ = tag.get("type", "")
+        if "alternate" in (rel or "").lower() and "calendar" in (typ or "").lower():
+            links.add(urljoin(html_url, tag["href"]))
+
+    # Variante 2: <a href="...ical..." oder ".ics">
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not href:
+            continue
+        if "ical" in href.lower() or href.lower().endswith(".ics"):
+            links.add(urljoin(html_url, href))
+
+    return list(links)
+
+# ---------- Varianten testen ----------
+def try_common_variants(base_url: str):
+    """Probiere gängige URL-Varianten für Rapla-iCal."""
     parts = list(urlparse(base_url))
     q = dict(parse_qsl(parts[4]))
     candidates = []
@@ -23,55 +54,73 @@ def _try_variants(base_url: str):
         parts_v = parts.copy(); parts_v[4] = urlencode(qv)
         candidates.append(urlunparse(parts_v))
 
+    # Alternative Hauptpfad-Variante
     p = urlparse(base_url)
     qv = q.copy(); qv["page"] = "ical"
     parts_alt = [p.scheme, p.netloc, "/rapla", p.params, urlencode(qv), p.fragment]
     candidates.append(urlunparse(parts_alt))
 
+    found = []
     for u in candidates:
         try:
             r = _get(u)
             if b"BEGIN:VCALENDAR" in r.content:
-                return r.content
+                found.append(u)
         except requests.RequestException:
-            continue
-    return None
+            pass
+    return found
 
-def find_ical_link_in_html(html_url: str):
-    try:
-        r = _get(html_url)
-    except Exception:
-        return None
-    soup = BeautifulSoup(r.text, "html.parser")
+# ---------- Kalender zusammenführen ----------
+def merge_calendars(ics_bytes_list):
+    """Führt mehrere ICS-Dateien zusammen (vermeidet doppelte UID)."""
+    out = Calendar()
+    out.add('PRODID', '-//Rapla Merge//ICS//DE')
+    out.add('VERSION', '2.0')
+    seen_uids = set()
 
-    # rel=alternate + type=text/calendar
-    for tag in soup.find_all("link", rel=True, href=True, type=True):
-        rel = " ".join(tag.get("rel")) if isinstance(tag.get("rel"), list) else tag.get("rel", "")
-        typ = tag.get("type", "")
-        if "alternate" in rel.lower() and "calendar" in typ.lower():
-            return urljoin(html_url, tag["href"])
+    for data in ics_bytes_list:
+        cal = Calendar.from_ical(data)
+        for comp in cal.walk():
+            if comp.name != "VEVENT":
+                continue
+            uid = str(comp.get("UID", "")) or str(comp.get("UID".upper(), ""))
+            if uid in seen_uids:
+                continue
+            seen_uids.add(uid)
+            out.add_component(comp)
+    return out.to_ical()
 
-    # Fallback: <a> mit 'ical' oder '.ics'
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if "ical" in href.lower() or href.lower().endswith(".ics"):
-            return urljoin(html_url, href)
-    return None
-
+# ---------- Hauptfunktion ----------
 def download_ics_smart(html_url: str) -> bytes:
-    ical_url = find_ical_link_in_html(html_url)
-    if ical_url:
-        data = _get(ical_url).content
-        if b"BEGIN:VCALENDAR" in data:
-            return data
+    """
+    Holt alle erreichbaren iCal-Feeds (über HTML, bekannte Varianten)
+    und führt sie ggf. zu einem Kalender zusammen.
+    """
+    links = set(find_all_ical_links(html_url))
+    links.update(try_common_variants(html_url))
 
-    data = _try_variants(html_url)
-    if data:
-        return data
+    ics_payloads = []
+    for link in links:
+        try:
+            data = _get(link).content
+            if b"BEGIN:VCALENDAR" in data:
+                ics_payloads.append(data)
+        except requests.RequestException:
+            pass
 
-    raise FileNotFoundError("Kein iCal-Export gefunden. Auf dieser Rapla-Seite ist vermutlich kein öffentlicher iCal aktiviert.")
+    if not ics_payloads:
+        raise FileNotFoundError("Kein iCal-Export gefunden – möglicherweise kein öffentlicher iCal verfügbar.")
 
+    # Nur ein Kalender? Dann direkt zurückgeben
+    if len(ics_payloads) == 1:
+        return ics_payloads[0]
+
+    # Mehrere Kalender? -> Zusammenführen
+    return merge_calendars(ics_payloads)
+
+# ---------- (optional) Filterfunktion ----------
 def filter_events(ics_data: bytes, keep_keywords=None, tz="Europe/Berlin") -> bytes:
+    """Optional: filtert nach Schlagwörtern wie Vorlesung, Übung, Praktikum."""
     if keep_keywords is None:
         keep_keywords = ["Vorlesung", "Üb", "Praktikum", "Übung", "Seminar", "Klausur"]
 
@@ -97,14 +146,6 @@ def filter_events(ics_data: bytes, keep_keywords=None, tz="Europe/Berlin") -> by
         summary = str(comp.get("SUMMARY", ""))
         if not any(kw.lower() in summary.lower() for kw in keep_keywords):
             continue
-        ev = Event()
-        for prop in ("UID","SUMMARY","DESCRIPTION","LOCATION","CATEGORIES","URL","DTSTAMP","CREATED","LAST-MODIFIED"):
-            if comp.get(prop):
-                ev.add(prop, comp.get(prop))
-        dtstart = _ensure_tz(comp.decoded("DTSTART", None))
-        dtend = _ensure_tz(comp.decoded("DTEND", None))
-        if dtstart: ev.add("DTSTART", dtstart)
-        if dtend:   ev.add("DTEND", dtend)
-        cal_out.add_component(ev)
+        cal_out.add_component(comp)
 
     return cal_out.to_ical()
